@@ -1,0 +1,6 @@
+thanks again from buying from me, if you need help dm me at: pveps | on discord
+
+please test the site by running a cmd in the file dir, npm install
+then do npm run build
+
+thanks :3
