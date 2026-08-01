@@ -1,23 +1,14 @@
 import { getSupabaseAdmin } from "@/lib/supabase"
 
 // Free-tier Supabase projects auto-pause after ~7 days with no API activity.
-// A tiny bit of real traffic (a storage write + a DB query) resets that
-// clock. This module is meant to be hit on a schedule by an external
-// uptime monitor (UptimeRobot, cron-job.org, etc.) via
-// /api/cron/keepalive — see SUPABASE_SETUP.md for the exact steps.
-
+// Hitting this endpoint on a schedule (UptimeRobot, cron-job.org, ...) writes
+// a file to storage + touches the DB, which resets that clock.
 const KEEPALIVE_BUCKET = "keepalive"
 const KEEPALIVE_PATH = "ping.txt"
 
-/**
- * Writes a small timestamped file to Supabase Storage and returns its
- * public URL. Creates the bucket on first run if it doesn't exist yet.
- * Reused (upsert) on every call so this never accumulates files.
- */
 export async function pingSupabaseStorage(): Promise<{ publicUrl: string }> {
   const admin = getSupabaseAdmin()
 
-  // Make sure the bucket exists (no-op if it's already there).
   const { data: buckets } = await admin.storage.listBuckets()
   const exists = buckets?.some((b) => b.name === KEEPALIVE_BUCKET)
   if (!exists) {
@@ -26,7 +17,7 @@ export async function pingSupabaseStorage(): Promise<{ publicUrl: string }> {
     })
     // Ignore "already exists" races; surface anything else.
     if (createError && !/already exists/i.test(createError.message)) {
-      throw new Error(`pingSupabaseStorage: createBucket failed: ${createError.message}`)
+      throw new Error(`createBucket failed: ${createError.message}`)
     }
   }
 
@@ -40,20 +31,15 @@ export async function pingSupabaseStorage(): Promise<{ publicUrl: string }> {
     })
 
   if (uploadError) {
-    throw new Error(`pingSupabaseStorage: upload failed: ${uploadError.message}`)
+    throw new Error(`upload failed: ${uploadError.message}`)
   }
 
   const { data } = admin.storage.from(KEEPALIVE_BUCKET).getPublicUrl(KEEPALIVE_PATH)
   return { publicUrl: data.publicUrl }
 }
 
-/**
- * Deletes every plugin_licenses row whose expires_at is in the past.
- * Returns how many rows were removed.
- */
 export async function deleteExpiredLicenses(): Promise<{ deletedCount: number }> {
   const admin = getSupabaseAdmin()
-
   const { data, error } = await admin
     .from("plugin_licenses")
     .delete()

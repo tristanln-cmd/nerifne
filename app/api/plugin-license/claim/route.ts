@@ -1,25 +1,18 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getSupabaseAdmin } from "@/lib/supabase"
-import { getClientIp } from "@/lib/rate-limit"
+import { getClientIp, readJson } from "@/lib/http"
 import { verifyCheckpointToken } from "@/lib/checkpoint"
 import { generateLicenseKey } from "@/lib/plugin-license"
 
 const STALE_AFTER_MS = 30 * 60_000
-const FREE_KEY_EXPIRES_HOURS = 2 * 24 // 2 days, in hours (same unit "add time" uses)
+const FREE_KEY_EXPIRES_HOURS = 2 * 24 // 2 days
 
-// POST /api/plugin-license/claim
-// Body: { token: string, plugin?: string }
-// Called once the "claim" checkpoint token has stepped through every
-// stage. Mints a free, single-activation license key — one active key per
-// IP, enforced here against Supabase (not just the in-memory rate limit),
-// so it holds up across cold starts / multiple serverless instances.
+// Called once the "claim" checkpoint has fully stepped through. Mints a free,
+// single-activation key — one per IP, enforced against the DB so it holds up
+// across cold starts and multiple serverless instances.
 export async function POST(req: NextRequest) {
-  let body: any
-  try {
-    body = await req.json()
-  } catch {
-    return NextResponse.json({ success: false, message: "Invalid JSON body" }, { status: 400 })
-  }
+  const body = await readJson(req)
+  if (!body) return NextResponse.json({ success: false, message: "Invalid JSON body" }, { status: 400 })
 
   const token = typeof body.token === "string" ? body.token : ""
   const payload = verifyCheckpointToken(token)
@@ -43,7 +36,6 @@ export async function POST(req: NextRequest) {
   const plugin = payload.plugin || "Madison"
   const supabase = getSupabaseAdmin()
 
-  // One active key per IP — authoritative, persistent check.
   const { data: existing, error: lookupError } = await supabase
     .from("plugin_licenses")
     .select("key, expires_at, revoked")

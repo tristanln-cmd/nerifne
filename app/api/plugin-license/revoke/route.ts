@@ -1,21 +1,16 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getSupabaseAdmin } from "@/lib/supabase"
+import { readJson } from "@/lib/http"
 import { isAuthorizedAdmin } from "@/lib/plugin-license"
 
-// POST /api/plugin-license/revoke
-// Header: x-admin-token: <PLUGIN_LICENSE_ADMIN_TOKEN>
-// Body: { key: string, revoked?: boolean }  (revoked defaults to true; pass false to un-revoke)
+// Admin-only. Pass { revoked: false } to un-revoke; defaults to true.
 export async function POST(req: NextRequest) {
   if (!isAuthorizedAdmin(req)) {
     return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 })
   }
 
-  let body: any
-  try {
-    body = await req.json()
-  } catch {
-    return NextResponse.json({ success: false, message: "Invalid JSON body" }, { status: 400 })
-  }
+  const body = await readJson(req)
+  if (!body) return NextResponse.json({ success: false, message: "Invalid JSON body" }, { status: 400 })
 
   const key = typeof body.key === "string" ? body.key.trim() : ""
   if (!key) {

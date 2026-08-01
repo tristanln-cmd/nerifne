@@ -1,34 +1,12 @@
 import { NextRequest, NextResponse } from "next/server"
 import { Resend } from "resend"
+import { createRateLimiter, isSubmittedTooFast } from "@/lib/rate-limit"
+import { getClientIp, readJson } from "@/lib/http"
 
-const rateLimitMap = new Map<string, { count: number; resetAt: number }>()
-
-const WINDOW_MS = 60_000
-const MAX_REQUESTS = 3
-const MIN_ELAPSED_MS = 2000
 const MAX_NAME = 80
 const MAX_SUBJECT = 120
 const MAX_MESSAGE = 2000
-
-function getIp(req: NextRequest): string {
-  return (
-    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
-    req.headers.get("x-real-ip") ??
-    "unknown"
-  )
-}
-
-function checkRateLimit(ip: string): boolean {
-  const now = Date.now()
-  const entry = rateLimitMap.get(ip)
-  if (!entry || now > entry.resetAt) {
-    rateLimitMap.set(ip, { count: 1, resetAt: now + WINDOW_MS })
-    return true
-  }
-  if (entry.count >= MAX_REQUESTS) return false
-  entry.count++
-  return true
-}
+const limiter = createRateLimiter(3, 60_000)
 
 function sanitize(value: unknown): string {
   if (typeof value !== "string") return ""
@@ -39,6 +17,7 @@ function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)
 }
 
+// Sniffs the subject to pick an auto-reply template + subject prefix.
 function detectIntent(subject: string): string {
   const text = subject.toLowerCase()
   const keywords: Record<string, string[]> = {
@@ -47,12 +26,12 @@ function detectIntent(subject: string): string {
     pricing: ["price","pricing","cost","quote","quotation","invoice","contract","proposal","budget","rates","fee","fees","charge","billing","enterprise","discount"],
     contact: ["hello","hi","hey","greetings","enquiry","inquiry","question","information","more info","learn more","partnership","collaborate","press","media","general"],
   }
-  const scores = Object.entries(keywords).map(([intent, kws]) => ({
-    intent,
-    score: kws.filter(kw => text.includes(kw)).length,
-  }))
-  const top = scores.sort((a, b) => b.score - a.score)[0]
-  return top.score > 0 ? top.intent : "fallback"
+  let best = { intent: "fallback", score: 0 }
+  for (const [intent, kws] of Object.entries(keywords)) {
+    const score = kws.filter((kw) => text.includes(kw)).length
+    if (score > best.score) best = { intent, score }
+  }
+  return best.intent
 }
 
 function buildAutoReplyHtml(name: string, intent: string, subject: string): { replySubject: string; html: string } {
@@ -92,80 +71,68 @@ function buildAutoReplyHtml(name: string, intent: string, subject: string): { re
 }
 
 export async function POST(req: NextRequest) {
-  try {
-    const apiKey = process.env.RESEND_API_KEY
-    if (!apiKey) {
-      return NextResponse.json({ error: "Server misconfiguration: missing API key." }, { status: 500 })
-    }
-
-    const resend = new Resend(apiKey)
-    const ip = getIp(req)
-
-    if (!checkRateLimit(ip)) {
-      return NextResponse.json(
-        { error: "Too many requests. Please wait before sending another message." },
-        { status: 429 }
-      )
-    }
-
-    let body: Record<string, unknown>
-    try {
-      body = await req.json()
-    } catch {
-      return NextResponse.json({ error: "Invalid request body." }, { status: 400 })
-    }
-
-    const loadTime = typeof body._t === "number" ? body._t : 0
-    if (Date.now() - loadTime < MIN_ELAPSED_MS) {
-      return NextResponse.json({ error: "Submission too fast." }, { status: 400 })
-    }
-
-    const name = sanitize(body.name)
-    const email = sanitize(body.email)
-    const subject = sanitize(body.subject)
-    const message = sanitize(body.message)
-
-    if (!name || name.length > MAX_NAME)
-      return NextResponse.json({ error: "Name must be between 1 and 80 characters." }, { status: 400 })
-    if (!email || !isValidEmail(email))
-      return NextResponse.json({ error: "Please enter a valid email address." }, { status: 400 })
-    if (!subject || subject.length > MAX_SUBJECT)
-      return NextResponse.json({ error: "Subject must be between 1 and 120 characters." }, { status: 400 })
-    if (!message || message.length < 10 || message.length > MAX_MESSAGE)
-      return NextResponse.json({ error: "Message must be between 10 and 2000 characters." }, { status: 400 })
-
-    const intent = detectIntent(subject)
-    const { replySubject, html: autoReplyHtml } = buildAutoReplyHtml(name, intent, subject)
-
-    const notify = await resend.emails.send({
-      from: "contact@nerfine.xyz",
-      to: "hello@nerfine.xyz",
-      replyTo: email,
-      subject: `[${intent.charAt(0).toUpperCase() + intent.slice(1)}] ${subject}`,
-      text: `Name: ${name}\nEmail: ${email}\n\n${message}`,
-      html: `<p><strong>Name:</strong> ${name}</p><p><strong>Email:</strong> ${email}</p><p><strong>Subject:</strong> ${subject}</p><hr /><p>${message.replace(/\n/g, "<br>")}</p>`,
-    })
-
-    if (notify.error) {
-      console.error("Resend notify error:", JSON.stringify(notify.error))
-      return NextResponse.json(
-        { error: `Send failed: ${notify.error.message}` },
-        { status: 500 }
-      )
-    }
-
-    resend.emails.send({
-      from: "noreply@nerfine.xyz",
-      to: email,
-      subject: replySubject,
-      html: autoReplyHtml,
-    }).catch((err: unknown) => console.error("Auto-reply failed (non-fatal):", err))
-
-    return NextResponse.json({ success: true }, { status: 200 })
-
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    console.error("Contact route crash:", message)
-    return NextResponse.json({ error: `Server error: ${message}` }, { status: 500 })
+  const apiKey = process.env.RESEND_API_KEY
+  if (!apiKey) {
+    return NextResponse.json({ error: "Server misconfiguration: missing API key." }, { status: 500 })
   }
+
+  if (!limiter.allow(getClientIp(req))) {
+    return NextResponse.json(
+      { error: "Too many requests. Please wait before sending another message." },
+      { status: 429 }
+    )
+  }
+
+  const body = await readJson(req)
+  if (!body) {
+    return NextResponse.json({ error: "Invalid request body." }, { status: 400 })
+  }
+
+  if (isSubmittedTooFast(body._t)) {
+    return NextResponse.json({ error: "Submission too fast." }, { status: 400 })
+  }
+
+  const name = sanitize(body.name)
+  const email = sanitize(body.email)
+  const subject = sanitize(body.subject)
+  const message = sanitize(body.message)
+
+  if (!name || name.length > MAX_NAME)
+    return NextResponse.json({ error: "Name must be between 1 and 80 characters." }, { status: 400 })
+  if (!email || !isValidEmail(email))
+    return NextResponse.json({ error: "Please enter a valid email address." }, { status: 400 })
+  if (!subject || subject.length > MAX_SUBJECT)
+    return NextResponse.json({ error: "Subject must be between 1 and 120 characters." }, { status: 400 })
+  if (!message || message.length < 10 || message.length > MAX_MESSAGE)
+    return NextResponse.json({ error: "Message must be between 10 and 2000 characters." }, { status: 400 })
+
+  const intent = detectIntent(subject)
+  const { replySubject, html: autoReplyHtml } = buildAutoReplyHtml(name, intent, subject)
+
+  const resend = new Resend(apiKey)
+  const notify = await resend.emails.send({
+    from: "contact@nerfine.xyz",
+    to: "hello@nerfine.xyz",
+    replyTo: email,
+    subject: `[${intent.charAt(0).toUpperCase() + intent.slice(1)}] ${subject}`,
+    text: `Name: ${name}\nEmail: ${email}\n\n${message}`,
+    html: `<p><strong>Name:</strong> ${name}</p><p><strong>Email:</strong> ${email}</p><p><strong>Subject:</strong> ${subject}</p><hr /><p>${message.replace(/\n/g, "<br>")}</p>`,
+  })
+
+  if (notify.error) {
+    console.error("Resend notify error:", JSON.stringify(notify.error))
+    return NextResponse.json(
+      { error: `Send failed: ${notify.error.message}` },
+      { status: 500 }
+    )
+  }
+
+  resend.emails.send({
+    from: "noreply@nerfine.xyz",
+    to: email,
+    subject: replySubject,
+    html: autoReplyHtml,
+  }).catch((err: unknown) => console.error("Auto-reply failed (non-fatal):", err))
+
+  return NextResponse.json({ success: true }, { status: 200 })
 }

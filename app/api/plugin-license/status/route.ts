@@ -1,24 +1,19 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getSupabaseAdmin } from "@/lib/supabase"
-import { getClientIp, checkRateLimit } from "@/lib/rate-limit"
+import { getClientIp, readJson } from "@/lib/http"
+import { createRateLimiter } from "@/lib/rate-limit"
 
-// POST /api/plugin-license/status
-// Body: { plugin?: string }
-// Looks up whether this IP already holds an active (non-revoked,
-// non-expired) key, so the get-key page can show a countdown + "Add time"
-// instead of running the claim checkpoint again.
+const limiter = createRateLimiter(3, 60_000)
+
+// Lets the get-key page show a countdown + "Add time" when this IP already
+// holds an active key, instead of running the claim checkpoint again.
 export async function POST(req: NextRequest) {
   const ip = getClientIp(req)
-  if (!checkRateLimit(ip)) {
+  if (!limiter.allow(ip)) {
     return NextResponse.json({ success: false, message: "Too many attempts, try again shortly." }, { status: 429 })
   }
 
-  let body: any
-  try {
-    body = await req.json()
-  } catch {
-    body = {}
-  }
+  const body = (await readJson(req)) ?? {}
   const plugin = typeof body.plugin === "string" && body.plugin.trim() ? body.plugin.trim() : "Madison"
 
   const supabase = getSupabaseAdmin()

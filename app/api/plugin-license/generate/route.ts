@@ -1,21 +1,16 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getSupabaseAdmin } from "@/lib/supabase"
+import { readJson } from "@/lib/http"
 import { isAuthorizedAdmin, generateLicenseKey } from "@/lib/plugin-license"
 
-// POST /api/plugin-license/generate
-// Header: x-admin-token: <PLUGIN_LICENSE_ADMIN_TOKEN>
-// Body: { plugin: string, customerEmail?: string, note?: string, expiresInDays?: number | null, maxActivations?: number }
+// Admin-only. Both handlers require the x-admin-token header.
 export async function POST(req: NextRequest) {
   if (!isAuthorizedAdmin(req)) {
     return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 })
   }
 
-  let body: any
-  try {
-    body = await req.json()
-  } catch {
-    return NextResponse.json({ success: false, message: "Invalid JSON body" }, { status: 400 })
-  }
+  const body = await readJson(req)
+  if (!body) return NextResponse.json({ success: false, message: "Invalid JSON body" }, { status: 400 })
 
   const plugin = typeof body.plugin === "string" ? body.plugin.trim() : ""
   if (!plugin) {
@@ -57,7 +52,6 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ success: true, license: data })
 }
 
-// GET /api/plugin-license/generate — list all licenses (admin only, reused route for simplicity)
 export async function GET(req: NextRequest) {
   if (!isAuthorizedAdmin(req)) {
     return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 })

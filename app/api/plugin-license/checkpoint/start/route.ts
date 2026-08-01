@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getClientIp, checkRateLimit } from "@/lib/rate-limit"
+import { getClientIp, readJson } from "@/lib/http"
+import { createRateLimiter } from "@/lib/rate-limit"
 import { getSupabaseAdmin } from "@/lib/supabase"
 import {
   issueCheckpointToken,
@@ -8,28 +9,21 @@ import {
   type CheckpointKind,
 } from "@/lib/checkpoint"
 
-// POST /api/plugin-license/checkpoint/start
-// Body: { plugin?: string, kind?: "claim" | "addtime", hours?: number }
-//
-// "claim"   — the free-key checkpoint. Rejected if this IP already holds an
-//             active (non-revoked, non-expired) key for the plugin.
-// "addtime" — the extend-your-key checkpoint. Rejected if this IP does NOT
-//             hold an active key. Step count scales with `hours`.
+const limiter = createRateLimiter(3, 60_000)
+
+// Starts a checkpoint run. "claim" is the free-key flow and is rejected if
+// this IP already holds an active key; "addtime" is the reverse and its step
+// count scales with the requested hours.
 export async function POST(req: NextRequest) {
   const ip = getClientIp(req)
-  if (!checkRateLimit(ip)) {
+  if (!limiter.allow(ip)) {
     return NextResponse.json(
       { success: false, message: "Too many attempts, try again shortly." },
       { status: 429 }
     )
   }
 
-  let body: any
-  try {
-    body = await req.json()
-  } catch {
-    body = {}
-  }
+  const body = (await readJson(req)) ?? {}
   const plugin = typeof body.plugin === "string" && body.plugin.trim() ? body.plugin.trim() : "Madison"
   const kind: CheckpointKind = body.kind === "addtime" ? "addtime" : "claim"
   const hours = kind === "addtime" ? clampAddTimeHours(Number(body.hours)) : undefined
@@ -65,22 +59,16 @@ export async function POST(req: NextRequest) {
   }
 
   const steps = stepsForKind(kind, hours)
-
-  let token: string
-  try {
-    token = issueCheckpointToken({
-      plugin,
-      kind,
-      step: 0,
-      totalSteps: steps.length,
-      minWaitMs: steps[0].minWaitMs,
-      startedAt: Date.now(),
-      ip,
-      hours,
-    })
-  } catch (e: any) {
-    return NextResponse.json({ success: false, message: e.message }, { status: 500 })
-  }
+  const token = issueCheckpointToken({
+    plugin,
+    kind,
+    step: 0,
+    totalSteps: steps.length,
+    minWaitMs: steps[0].minWaitMs,
+    startedAt: Date.now(),
+    ip,
+    hours,
+  })
 
   return NextResponse.json({
     success: true,

@@ -1,32 +1,28 @@
-import type { NextRequest } from "next/server"
+// In-memory, per-IP rate limiting. Each route gets its own instance, so one
+// endpoint being hammered doesn't starve the others. If you ever run multiple
+// serverless instances, back this with Redis / Vercel KV instead.
+export function createRateLimiter(limit: number, windowMs: number) {
+  const hits = new Map<string, { count: number; resetAt: number }>()
 
-const rateLimitMap = new Map<string, { count: number; resetAt: number }>()
+  return {
+    allow(ip: string): boolean {
+      const now = Date.now()
+      const hit = hits.get(ip)
+      if (!hit || now > hit.resetAt) {
+        hits.set(ip, { count: 1, resetAt: now + windowMs })
+        return true
+      }
+      if (hit.count >= limit) return false
+      hit.count++
+      return true
+    },
+  }
+}
 
-const WINDOW_MS = 60_000
-const MAX_REQUESTS = 3
+// A submission that arrives less than 2s after the page loaded is almost
+// certainly a bot — humans can't type that fast.
 const MIN_ELAPSED_MS = 2000
 
-export function getClientIp(req: NextRequest): string {
-  return (
-    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
-    req.headers.get("x-real-ip") ??
-    "unknown"
-  )
-}
-
-export function checkRateLimit(ip: string): boolean {
-  const now = Date.now()
-  const entry = rateLimitMap.get(ip)
-  if (!entry || now > entry.resetAt) {
-    rateLimitMap.set(ip, { count: 1, resetAt: now + WINDOW_MS })
-    return true
-  }
-  if (entry.count >= MAX_REQUESTS) return false
-  entry.count++
-  return true
-}
-
 export function isSubmittedTooFast(loadTime: unknown): boolean {
-  const t = typeof loadTime === "number" ? loadTime : 0
-  return Date.now() - t < MIN_ELAPSED_MS
+  return typeof loadTime === "number" && Date.now() - loadTime < MIN_ELAPSED_MS
 }

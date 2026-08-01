@@ -1,5 +1,3 @@
-
-
 export function timingSafeEqual(a: string, b: string): boolean {
   if (typeof a !== "string" || typeof b !== "string") return false
 

@@ -1,23 +1,18 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getSupabaseAdmin } from "@/lib/supabase"
-import { getClientIp, checkRateLimit } from "@/lib/rate-limit"
+import { getClientIp, readJson } from "@/lib/http"
+import { createRateLimiter } from "@/lib/rate-limit"
 import { verifyCheckpointToken } from "@/lib/checkpoint"
 
 const STALE_AFTER_MS = 30 * 60_000
+const limiter = createRateLimiter(3, 60_000)
 
-// POST /api/plugin-license/addtime
-// Body: { token: string }
-// Called once an "addtime" checkpoint token has stepped through every ad
-// gate. Extends this IP's active key by the number of hours baked into the
-// token (extension is measured from the key's current expiry, or from now
-// if it already lapsed, so it never lets you "stack" past what you picked).
+// Called once an "addtime" checkpoint has stepped through every ad gate.
+// Extends this IP's active key by the hours baked into the token, measured
+// from the key's current expiry (or from now if it already lapsed).
 export async function POST(req: NextRequest) {
-  let body: any
-  try {
-    body = await req.json()
-  } catch {
-    return NextResponse.json({ success: false, message: "Invalid JSON body" }, { status: 400 })
-  }
+  const body = await readJson(req)
+  if (!body) return NextResponse.json({ success: false, message: "Invalid JSON body" }, { status: 400 })
 
   const token = typeof body.token === "string" ? body.token : ""
   const payload = verifyCheckpointToken(token)
@@ -32,7 +27,7 @@ export async function POST(req: NextRequest) {
       { status: 400 }
     )
   }
-  if (!checkRateLimit(ip)) {
+  if (!limiter.allow(ip)) {
     return NextResponse.json({ success: false, message: "Too many attempts, try again shortly." }, { status: 429 })
   }
 

@@ -1,22 +1,14 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getClientIp } from "@/lib/rate-limit"
+import { getClientIp, readJson } from "@/lib/http"
 import { verifyCheckpointToken, issueCheckpointToken, stepsForKind } from "@/lib/checkpoint"
 
 const STALE_AFTER_MS = 30 * 60_000 // abandon a run if a step sits open this long
 
-// POST /api/plugin-license/checkpoint/advance
-// Body: { token: string }
-// Verifies the current step's wait time has actually elapsed, then issues
-// the token for the next step (or reports done: true after the last one).
-// Works for both "claim" and "addtime" checkpoint runs — the step config
-// (count + wait times) travels inside the token itself.
+// Verifies the current step's wait has elapsed, then issues the token for the
+// next step (or reports done after the last one). Works for both checkpoint kinds.
 export async function POST(req: NextRequest) {
-  let body: any
-  try {
-    body = await req.json()
-  } catch {
-    return NextResponse.json({ success: false, message: "Invalid JSON body" }, { status: 400 })
-  }
+  const body = await readJson(req)
+  if (!body) return NextResponse.json({ success: false, message: "Invalid JSON body" }, { status: 400 })
 
   const token = typeof body.token === "string" ? body.token : ""
   const payload = verifyCheckpointToken(token)
@@ -53,7 +45,7 @@ export async function POST(req: NextRequest) {
   const nextStepIndex = payload.step + 1
   const done = nextStepIndex >= payload.totalSteps
 
-  // Steps for this run's kind/hours, so we know the next step's wait time.
+  // The next step's wait time lives in the token's own step config.
   const steps = stepsForKind(payload.kind, payload.hours)
   const nextMinWaitMs = steps[nextStepIndex]?.minWaitMs ?? steps[steps.length - 1].minWaitMs
 
