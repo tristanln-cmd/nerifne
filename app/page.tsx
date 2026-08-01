@@ -60,7 +60,7 @@ export default function Home() {
       <div className="relative z-10">
         {/* ─── Hero ─── */}
         <section className="relative mx-auto max-w-7xl px-4 py-12 sm:px-6 sm:py-16 lg:py-24">
-          <div className="hidden lg:block absolute -left-100 top-40">
+          <div className="hidden lg:block absolute right-100 top-40">
             <ProfileCard />
           </div>
           <div className="animate-fade-in-up max-w-3xl">
